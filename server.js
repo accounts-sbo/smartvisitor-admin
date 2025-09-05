@@ -1,5 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
+const sqlite3 = require('sqlite3').verbose();
 const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
@@ -34,6 +35,8 @@ const server = http.createServer(app);
 
 // Database connection pool
 let dbPool;
+let sqliteDb;
+let usingSqlite = false;
 
 // WebSocket server
 const wss = new WebSocket.Server({ server });
@@ -77,23 +80,122 @@ function log(level, message, data = null) {
 // Database initialization
 async function initializeDatabase() {
     try {
+        // Try MySQL first
         dbPool = mysql.createPool(config.db);
-        
+
         // Test connection
         const connection = await dbPool.getConnection();
         await connection.ping();
         connection.release();
-        
-        log('info', 'Database connection established');
-        
+
+        log('info', 'MySQL database connection established');
+
         // Create pending_tag_assignments table if it doesn't exist
         await createPendingTagAssignmentsTable();
-        
+
         return true;
     } catch (error) {
-        log('error', 'Database connection failed', error.message);
-        throw error;
+        log('warning', 'MySQL connection failed, falling back to SQLite', error.message);
+
+        // Fallback to SQLite
+        try {
+            await initializeSqlite();
+            usingSqlite = true;
+            log('info', 'SQLite database initialized successfully');
+            return true;
+        } catch (sqliteError) {
+            log('error', 'SQLite initialization failed', sqliteError.message);
+            throw sqliteError;
+        }
     }
+}
+
+// SQLite initialization
+async function initializeSqlite() {
+    return new Promise((resolve, reject) => {
+        const dbPath = path.join(__dirname, 'smartvisitor.db');
+        sqliteDb = new sqlite3.Database(dbPath, (err) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+
+            log('info', `SQLite database created at ${dbPath}`);
+
+            // Create tables
+            const createTables = `
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    organization_id INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS guests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    phone TEXT,
+                    vip BOOLEAN DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS scanners (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    mac_address TEXT NOT NULL UNIQUE,
+                    location TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_heartbeat DATETIME
+                );
+
+                CREATE TABLE IF NOT EXISTS tag_assignments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    guest_id INTEGER NOT NULL,
+                    tag_id TEXT NOT NULL,
+                    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (guest_id) REFERENCES guests(id),
+                    UNIQUE(project_id, guest_id),
+                    UNIQUE(project_id, tag_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS pending_tag_assignments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    guest_id INTEGER NOT NULL,
+                    scanner_id INTEGER,
+                    tag_id TEXT,
+                    status TEXT DEFAULT 'waiting',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (guest_id) REFERENCES guests(id),
+                    FOREIGN KEY (scanner_id) REFERENCES scanners(id)
+                );
+
+                -- Insert sample data
+                INSERT OR IGNORE INTO projects (id, name, description) VALUES (1, 'Test Event', 'Test event for SmartVisitor system');
+                INSERT OR IGNORE INTO guests (id, project_id, name, email, vip) VALUES (1, 1, 'Willem van Leunen', 'willem@example.com', 1);
+                INSERT OR IGNORE INTO scanners (id, name, mac_address, location) VALUES (1, 'VIP Ingang Scanner', 'F0:F5:BD:54:36:A8', 'VIP Entrance');
+            `;
+
+            sqliteDb.exec(createTables, (err) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve();
+            });
+        });
+    });
 }
 
 async function createPendingTagAssignmentsTable() {
