@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  smartvisitor-admin:
+    build: .
+    container_name: smartvisitor-admin
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=172.17.0.1
+      - DB_USER=root
+      - DB_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - DB_NAME=sv_scans
+      - DB_PORT=3306
+      - PORT=3000
+      - SESSION_SECRET=${SESSION_SECRET:-default_session_secret}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - WS_HEARTBEAT_INTERVAL=${WS_HEARTBEAT_INTERVAL:-30000}
+      - API_RATE_LIMIT=${API_RATE_LIMIT:-100}
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - smartvisitor-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - db-check
+
+  db-check:
+    image: mysql:8.0
+    container_name: smartvisitor-db-check
+    command: >
+      sh -c "
+        until mysqladmin ping -h172.17.0.1 -uroot -p${MYSQL_ROOT_PASSWORD} --silent; do
+          echo 'Waiting for database connection...';
+          sleep 2;
+        done;
+        echo 'Database is ready!';
+      "
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    networks:
+      - smartvisitor-network
+
+networks:
+  smartvisitor-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local
