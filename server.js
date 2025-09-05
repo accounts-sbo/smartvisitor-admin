@@ -256,6 +256,11 @@ app.use(morgan('dev'));
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Root route - serve index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.json({
